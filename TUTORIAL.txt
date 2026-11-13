@@ -1,0 +1,1213 @@
+﻿==============================================================================
+                BITMAP LYRICS PLAYER  -  COMPLETE TUTORIAL
+        ESP32  +  1.3" SH1106 OLED  +  Bengali / Unicode lyrics
+                          Version 1.0
+==============================================================================
+
+WHAT YOU GET AT THE END
+-----------------------
+A small OLED (128x64 pixels) that shows your song's lyrics, line by line,
+in proper Bengali script, exactly in time with the song. You type the
+lyrics and timestamps in a web page on your PC, click one button, and the
+ESP32 pulls the new lyrics over Wi-Fi. No re-uploading the sketch for
+every song. No Serial Monitor needed.
+
+This tutorial assumes Windows. Everything also works on macOS/Linux with
+small command changes, but the helper script (.bat) is Windows-only.
+
+
+==============================================================================
+  CONTENTS
+==============================================================================
+  0.  BEFORE YOU START - READ THIS
+  1.  HOW IT WORKS (UNDERSTAND THIS FIRST)
+  2.  WHAT YOU NEED - HARDWARE
+  3.  WHAT YOU NEED - SOFTWARE
+  4.  STEP 1 - INSTALL PYTHON
+  5.  STEP 2 - INSTALL THE PYTHON PACKAGES
+  6.  STEP 3 - INSTALL ARDUINO IDE, ESP32 BOARD AND LIBRARIES
+  7.  STEP 4 - WIRE THE OLED
+  8.  STEP 5 - UNZIP AND CHECK THE PROJECT FOLDER
+  9.  STEP 6 - START THE CONTROL PANEL
+  10. STEP 7 - TYPE YOUR LYRICS
+  11. STEP 8 - GENERATE BITMAPS AND SYNC THE ESP32
+  12. STEP 9 - CONFIGURE AND UPLOAD THE FIRMWARE
+  13. STEP 10 - PLAY IT IN SYNC WITH THE SONG
+  14. MANUAL MODE (NO CONTROL PANEL)
+  15. THE FILES AND WHAT EVERY FIELD MEANS
+  16. ADVANCED - SPRITE GIFS, VIDEO AND TEXT EFFECTS
+  17. TROUBLESHOOTING - SYMPTOM, CAUSE, FIX
+  18. LIMITS AND PERFORMANCE
+  19. SHARING THIS WITH YOUR FOLLOWERS - CHECKLIST
+  20. QUICK REFERENCE CARD
+  21. FAQ
+
+
+==============================================================================
+  0.  BEFORE YOU START - READ THIS
+==============================================================================
+
+Three things surprise almost everybody, so read them now:
+
+1) THE ESP32 DOES NOT PLAY AUDIO.
+   This project displays lyrics only. The song plays on your PC, phone or
+   speaker, and you start it at the same moment you press "Play lyrics".
+   The ESP32 keeps its own clock from that moment and flips the pictures
+   at the timestamps you typed. That is why there is no speaker, no I2S
+   amplifier and no MP3 decoding in the firmware.
+
+2) THE PC MUST BE ON WHILE THE ESP32 RUNS.
+   The ESP32 is a dumb picture puller: it downloads the bitmaps from your
+   PC's little web server every time it boots. Close the server and the
+   ESP32 keeps showing whatever it already downloaded, but it can never
+   reload new lyrics or receive Play / Stop buttons again.
+
+3) THIS FIRMWARE IS FOR SH1106, NOT SSD1306.
+   The common 1.3" I2C OLED uses the SH1106 controller. The very common
+   0.96" OLED uses SSD1306. The picture format (128x64, 1024 bytes) is
+   identical, only the driver class changes - see FAQ 3 in section 21 and
+   troubleshooting item H in section 17.
+
+And one more, if you plan to share this:
+
+   YOUR WI-FI PASSWORD IS HARD-CODED IN THE SKETCH.
+   The uploaded version contains a real SSID and password. Replace them
+   with placeholders BEFORE you zip and share. See section 19.
+
+
+==============================================================================
+  1.  HOW IT WORKS (UNDERSTAND THIS FIRST)
+==============================================================================
+
+   +--------------------------- your PC (Windows) --------------------------+
+   |                                                                        |
+   |  control_panel.py            generate_bitmaps_harfbuzz_ui.py           |
+   |  (web page, port 8080)  -->  (Python: HarfBuzz + FreeType + Pillow)    |
+   |         |                            |                                 |
+   |         |                            v                                 |
+   |         |                   web/bitmaps/NNN.bin  (1024 bytes each)     |
+   |         |                   web/manifest.json                          |
+   |         |                            |                                 |
+   |         +----> content server, port 8000, serves the "web" folder      |
+   +----------------------------------------|-------------------------------+
+                                            |  Wi-Fi (same network)
+                                            v
+   +---------------------------- ESP32 + OLED ------------------------------+
+   |  On boot:  GET /manifest.json  -> list of timestamps + image names     |
+   |            GET /bitmaps/NNN.bin -> 1024 bytes per lyric line           |
+   |            GET /control.json   -> {"seq": n, "command": "play"}        |
+   |  While running: draws the bitmap whose timestamp just passed.          |
+   +------------------------------------------------------------------------+
+
+Two servers, do not confuse them:
+
+   PC CONTROL PANEL   http://127.0.0.1:8080
+                      The page with the buttons and the lyric table.
+                      Only your PC can open it (localhost). If 8080 is
+                      busy it silently moves to 8081...8099.
+
+   CONTENT SERVER     http://<YOUR-PC-IP>:8000
+                      A plain file server for the "web" folder. This is
+                      the one the ESP32 talks to. It must stay running.
+
+The "Generate bitmaps + Sync ESP32" button does four things in one click:
+   1. saves your lyrics to lyrics.json
+   2. runs the Python generator (new .bin files + new manifest.json)
+   3. starts the content server if it is not running
+   4. writes {"seq": n+1, "command": "reload"} into web/control.json
+
+The ESP32 checks control.json every 500 ms. When the sequence number
+changes, it re-downloads everything and shows "Lyrics updated!".
+
+
+==============================================================================
+  2.  WHAT YOU NEED - HARDWARE
+==============================================================================
+
+  [ ] ESP32 development board. Classic ESP32-WROOM-32 / DevKitC / NodeMCU-32S
+      is perfect. ESP32-S3, ESP32-C3 etc. also work if the pins below exist
+      on your board. PSRAM is NOT required for lyrics (only for the optional
+      full-screen video feature in section 16).
+
+  [ ] 1.3 inch OLED, 128x64, I2C, 4 pins (VCC, GND, SCL, SDA), SH1106.
+      Address is normally 0x3C, sometimes 0x3D.
+
+  [ ] 4 female-to-female jumper wires.
+
+  [ ] USB cable that carries data (some cables charge only - classic trap).
+
+  [ ] A 2.4 GHz Wi-Fi network. The ESP32 cannot join 5 GHz-only networks.
+      A phone hotspot set to 2.4 GHz works fine for demos.
+
+Optional but nice: a phone stand or a 3D-printed case - a 1.3" OLED is
+small enough to disappear on camera, so mount it high.
+
+
+==============================================================================
+  3.  WHAT YOU NEED - SOFTWARE
+==============================================================================
+
+  PYTHON 3.11 - 3.14  (3.12 recommended; the .bat file is pinned to 3.12)
+      + three packages:  pillow, uharfbuzz, freetype-py
+
+  ARDUINO IDE 2.x
+      + ESP32 board support package
+      + libraries: Adafruit SH110X, Adafruit GFX Library,
+                   Adafruit BusIO, ArduinoJson
+
+That is all. The control panel itself needs no extra package - it uses
+only Python's standard library (http.server, json, socket, webbrowser).
+
+Package roles, so the install below makes sense:
+
+  pillow       - creates the 128x64 image, thresholds it, writes the
+                 1024-byte packed bitmap, builds lyric_preview.png
+  uharfbuzz    - Bengali "shaping": joins consonants, moves the i-kar
+                 (ি) before its consonant, stacks conjuncts. Without this
+                 Bengali looks like random letters in the wrong order.
+  freetype-py  - turns the shaped glyphs into pixels at the right size
+                 and position
+
+
+==============================================================================
+  4.  STEP 1 - INSTALL PYTHON
+==============================================================================
+
+4.1  Download Python from https://www.python.org/downloads/windows/
+     Pick the 64-bit Windows installer for 3.12.x (or a newer 3.x).
+
+4.2  Run the installer. On the FIRST screen, tick:
+
+        [x] Add python.exe to PATH          <- easy to miss, important
+        [x] Install launcher for all users  <- gives you the "py" command
+
+     Then "Install Now". A "Disable path length limit" option at the end is
+     harmless either way; clicking it avoids rare deep-folder problems.
+
+4.3  Close and reopen the terminal (or VS Code), then check:
+
+        py -0p
+
+     You should see a list like:
+
+        -V:3.12 *  C:\Users\<you>\AppData\Local\Programs\Python\Python312\python.exe
+
+     The star marks the default. If your only version is 3.13/3.14, that is
+     fine - see the note at the end of Step 2.
+
+4.4  CHECKPOINT - this must print a version, not an error:
+
+        py -3.12 --version
+        py -3.12 -m pip --version
+
+     If you get "Python was not found; run without arguments to install
+     from the Microsoft Store", Windows is showing its fake stub. Turn off
+     App Execution Aliases for python.exe/python3.exe in
+     Settings > Apps > Advanced app settings > App execution aliases,
+     or simply always use "py" instead of "python".
+
+
+==============================================================================
+  5.  STEP 2 - INSTALL THE PYTHON PACKAGES
+==============================================================================
+
+5.1  One command installs all three:
+
+        py -3.12 -m pip install --upgrade pillow uharfbuzz freetype-py
+
+     Expected tail of the output:
+
+        Successfully installed freetype-py-2.5.1 pillow-13.0.0 uharfbuzz-0.57.0
+
+     (Exact versions will differ over time; what matters is "Successfully
+     installed".)
+
+5.2  VERIFY - this is the single most useful check in this tutorial:
+
+        py -3.12 -c "import PIL, uharfbuzz, freetype; print('OK', PIL.__version__, uharfbuzz.__version__)"
+
+     Expected:      OK 13.0.0 0.57.0
+
+     If it prints OK, the whole image pipeline will work. If it raises
+     ModuleNotFoundError, the package is in a different Python than the one
+     you are running - read 5.4.
+
+5.3  COMMON PROBLEMS
+
+     "pip is not recognized"
+        Always use the launcher form:  py -3.12 -m pip install ...
+        Never rely on a bare "pip" command.
+
+     "Could not find a version that satisfies the requirement uharfbuzz"
+        Your Python is newer than the available uharfbuzz wheels, or you are
+        on 32-bit Python. Install 64-bit Python 3.12 and retry. uharfbuzz
+        ships a stable-ABI wheel, so 3.11 and newer normally work.
+
+     SSL / certificate errors, or very slow downloads
+        Usually a proxy, VPN or antivirus HTTPS scanner. Try:
+            py -3.12 -m pip install --upgrade pillow uharfbuzz freetype-py --trusted-host pypi.org --trusted-host files.pythonhosted.org
+        If you are offline, download the .whl files on another machine and:
+            py -3.12 -m pip install C:\path\to\*.whl
+
+     "error: externally-managed-environment"
+        That is a Linux/macOS message, not Windows. On those systems use a
+        virtual environment:
+            python3 -m venv .venv
+            .venv/bin/pip install pillow uharfbuzz freetype-py
+        and then run the panel with .venv/bin/python control_panel.py
+
+5.4  IMPORTANT - WHICH PYTHON DOES WHAT
+
+     control_panel.py launches the generator with the SAME Python it is
+     running under (sys.executable). So the three packages must be
+     installed in the interpreter that opens the panel.
+
+     The supplied control_panel.bat hard-codes:
+
+            py -3.12 control_panel.py
+
+     If 3.12 is not on your machine, either install 3.12 (simplest) or edit
+     control_panel.bat and change "-3.12" to "-3" (or to your version), then
+     install the packages with the matching command:
+
+            py -3 -m pip install pillow uharfbuzz freetype-py
+
+     A mismatch here is the #1 cause of "Missing Python package: PIL" even
+     though pip said "Successfully installed".
+
+
+==============================================================================
+  6.  STEP 3 - INSTALL ARDUINO IDE, ESP32 BOARD AND LIBRARIES
+==============================================================================
+
+6.1  INSTALL ARDUINO IDE 2.x
+     https://www.arduino.cc/en/software  ->  Windows Win 10 and newer,
+     64 bits. Install with the default options and let it install the
+     USB drivers when asked.
+
+6.2  ADD ESP32 BOARD SUPPORT
+     File > Preferences > Additional boards manager URLs, paste:
+
+        https://espressif.github.io/arduino-esp32/package_esp32_index.json
+
+     (If the field already has an entry, add a comma and paste after it.)
+
+     Then Tools > Board > Boards Manager, search "esp32", install
+     "esp32 by Espressif Systems". This is a ~250 MB download and takes a
+     while. Any 2.x or 3.x release works with this sketch.
+
+6.3  INSTALL THE FOUR LIBRARIES
+     Tools > Manage Libraries (Ctrl+Shift+I), then for each name below
+     type it in the search box, pick the entry by the stated author and
+     click Install. Accept "Install all" when it offers dependencies.
+
+        Adafruit SH110X          by Adafruit      (2.1.x)  <- OLED driver
+        Adafruit GFX Library     by Adafruit      (1.11.x+) <- drawing core
+        Adafruit BusIO           by Adafruit               <- I2C/SPI helper
+        ArduinoJson              by Benoit Blanchon        <- JSON parser
+
+     Adafruit SH110X is the library the sketch includes as
+     <Adafruit_SH110X.h>. It provides both Adafruit_SH1106G and
+     Adafruit_SH1107; SH110X also pulls in Adafruit GFX and BusIO as
+     dependencies, but install all four explicitly so nothing is missing.
+
+     ArduinoJson version note:
+        The sketch uses the version-6 style API (DynamicJsonDocument).
+        ArduinoJson 6.21.x is the safest choice.
+        ArduinoJson 7.x still compiles it, with deprecation warnings.
+        To pick 6.21.x: in Library Manager click the version dropdown on
+        the ArduinoJson card and choose 6.21.5 before installing.
+
+6.4  SELECT THE BOARD
+     Tools > Board > esp32 > ESP32 Dev Module
+     then, with the board plugged in:
+        Tools > Port        -> the COM port that appeared (e.g. COM5)
+        Tools > Upload Speed -> 921600 (drop to 115200 if uploads fail)
+        Tools > Flash Size  -> 4MB (32Mb)
+        Tools > Partition Scheme -> "Default 4MB with spiffs"
+                                    (change to "Huge APP (3MB No OTA...)"
+                                     only if you get "Sketch too big")
+        Tools > PSRAM       -> Disabled (lyrics only; enable if your board
+                                has PSRAM and you use video clips)
+
+     No COM port at all? Install the USB-serial driver for your board:
+     CP210x (Silicon Labs) or CH340/CH341. Many DevKitC clones use CP2102.
+     Try another USB cable before anything else.
+
+
+==============================================================================
+  7.  STEP 4 - WIRE THE OLED
+==============================================================================
+
+      OLED pin        ESP32 pin
+      --------        ---------
+      VCC             3V3        (3.3 V - never 5 V)
+      GND             GND
+      SDA             GPIO 21    (D21)
+      SCL             GPIO 22    (D22)
+
+  The sketch sets these pins itself with  Wire.begin(21, 22);
+
+  Some modules label the pins SDA/SCL, others label them D1/D2 or A4/A5.
+  On a 4-pin I2C OLED, D1 is almost always SDA and D2 is SCL - but the
+  VCC/GND/SDA/SCL labels on the PCB always win over any other marking.
+
+  I2C address: the sketch uses 0x3C. If your module is 0x3D, change
+  OLED_ADDRESS in the sketch.
+
+  QUICK WIRING TEST (do this once, it saves an hour later)
+  Upload this tiny scanner, open Serial Monitor at 115200 and look for an
+  address. Nothing found means wiring/power, not a software problem.
+
+      #include <Wire.h>
+      void setup() {
+        Serial.begin(115200);
+        Wire.begin(21, 22);
+      }
+      void loop() {
+        for (uint8_t a = 1; a < 127; a++) {
+          Wire.beginTransmission(a);
+          if (Wire.endTransmission() == 0) {
+            Serial.printf("Found 0x%02X\n", a);
+          }
+        }
+        delay(3000);
+      }
+
+  Expected output:  Found 0x3C
+
+
+==============================================================================
+  8.  STEP 5 - UNZIP AND CHECK THE PROJECT FOLDER
+==============================================================================
+
+8.1  Extract the ZIP somewhere simple, with NO unusual characters in the
+     path. Good:  C:\PixelMon\BitmapLyricsPlayer
+     Bad:         C:\Users\মিনা\Downloads\new folder (2)\...
+
+8.2  You should see this layout (folder "frimware" is a typo in the ZIP -
+     it is just a folder, leave it or rename it to "firmware", your choice):
+
+     BitmapLyricsPlayer\
+        control_panel.bat                  <- double-click to start the UI
+        control_panel.py                   <- the local web panel (stdlib only)
+        generate_bitmaps_harfbuzz_ui.py    <- the one the panel calls
+        generate_bitmaps.py                <- old, self-contained demo version
+        lyrics.json                        <- your lyric lines + timestamps
+        Kalpana UNICODE.ttf                <- the Bengali font
+        lyric_preview.png                  <- contact sheet of the last build
+        README.txt
+        TUTORIAL.txt                       <- this file
+        web\
+           control.json                    <- commands for the ESP32
+           manifest.json                   <- timestamps -> bitmap files
+           bitmaps\                        <- the generated .bin files
+           songs\song.mp3                  <- the song you play on the PC
+        frimware\
+           BitmapLyricsPlayer_Video_Timeline_SH1106.ino   <- ESP32 sketch
+
+8.3  IMPORTANT ARDUINO RULE
+     Arduino refuses to open a sketch whose folder name differs from the
+     .ino file name. Rename the folder:
+
+        frimware  ->  BitmapLyricsPlayer_Video_Timeline_SH1106
+
+     then double-click the .ino. (Or, in Arduino IDE: File > Open, pick the
+     .ino, and accept the offer to create a matching folder.)
+
+8.4  CHECKPOINT
+     Double-click control_panel.bat. A browser should open
+     http://127.0.0.1:8080 with the purple "Bitmap Lyrics Studio" page.
+     A black console window stays open behind it - that window IS the
+     program. Closing it stops everything, including the content server.
+
+     The page shows "Content server offline" until you click Start server
+     (or publish). That is normal.
+
+
+==============================================================================
+  9.  STEP 6 - START THE CONTROL PANEL (DETAILS)
+==============================================================================
+
+  Double-click:  control_panel.bat
+
+  What it does:
+     - moves into its own folder (cd /d "%~dp0")
+     - checks that "py" exists and tells you if it does not
+     - runs  py -3.12 control_panel.py
+     - opens http://127.0.0.1:8080 (or 8081...8099 if 8080 is busy)
+
+  The console prints:
+     Bitmap Lyrics Studio is running at http://127.0.0.1:8080
+     Keep this window open while using the control panel.
+
+  Look at the top-right card "01 - Web server". It shows:
+     ESP32 content server  http://192.168.x.x:8000
+     PC address            192.168.x.x
+  That IP is exactly what goes into SERVER_BASE in the sketch (Step 9).
+
+  WINDOWS FIREWALL - DO THIS ONCE
+  The first time the content server starts, Windows asks whether to allow
+  Python on the network. You MUST tick "Private networks" and click Allow.
+  If you clicked Cancel by mistake (or the ESP32 gets "connection refused"
+  while the server is running), fix it in:
+     Windows Security > Firewall & network protection >
+     Allow an app through firewall > change settings > find python.exe >
+     tick Private.
+  Or as admin in PowerShell:
+     New-NetFirewallRule -DisplayName "Bitmap Lyrics Server" -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow -Profile Private
+
+  Keep the Wi-Fi network profile set to "Private", not "Public".
+  Public networks block inbound connections even when the firewall rule
+  exists.
+
+  BUTTONS
+     Start server / Stop server / Restart server
+        Start/stop the port-8000 file server. Stop it and the ESP32 can no
+        longer download anything (it will keep showing its last playlist).
+     Play lyrics / Stop lyrics / Restart lyrics
+        Writes the command into control.json. Restart resets the lyric
+        timer to 00:00. Requires the content server to be running.
+
+
+==============================================================================
+  10.  STEP 7 - TYPE YOUR LYRICS
+==============================================================================
+
+  Section "03 - Lyrics timeline". Each row is one screen.
+
+  TIME column formats accepted:
+     00:32.450    minutes:seconds.milliseconds   <- most precise, best
+     00:32        minutes:seconds
+     72           seconds only
+
+  Rows must be in ascending timestamp order. Use the arrow buttons to
+  reorder instead of retyping. The panel refuses to save out-of-order
+  timestamps, empty rows, or more than 80 rows.
+
+  HOW TO GET GOOD TIMESTAMPS
+     1. Play the song on the PC and watch the player's timer.
+     2. Pause at the exact moment a line starts; use the millisecond
+        display if your player has one.
+     3. Type that time for the line. Work in small chunks, 10-15 lines at
+        a time, and press "Save draft" as you go.
+     4. Do not put two different lines at the same millisecond - the later
+        one simply overwrites the earlier one instantly.
+
+  HOW MUCH TEXT FITS
+  The image is 128x64 pixels. The generator starts at 19 px and shrinks
+  until the line fits, wrapping at spaces, down to 8 px minimum. Realistic
+  limits with a Bengali font:
+     - a short line:      up to ~14-18 Bengali characters
+     - two lines:         up to ~2 x 12 characters (it wraps automatically)
+     - longer than that:  it shrinks to unreadable, or fails with
+                          "Lyric will not fit the OLED even at 8px"
+  Rule of thumb: one screen = one short phrase, not a full sentence.
+  Split long sentences into two rows with their own timestamps. That also
+  looks better live.
+
+  FONT
+  The generator looks for, in this order:
+     Kalpana UNICODE.ttf, Kalpana UNICODE(1).ttf, Kalpana UNICODE (1).ttf,
+     Kalpana.ttf
+  then any single .ttf in the folder that actually contains Bengali glyphs.
+
+  To use another font (Noto Sans Bengali, Kalpurush, SolaimanLipi Unicode,
+  Hind Siliguri ...): delete the old .ttf files, drop exactly ONE .ttf in
+  the folder, and either rename it to Kalpana.ttf or leave it alone if it
+  is the only font there. Two different Bengali fonts in the folder make
+  the script stop and ask you to rename one.
+
+  WARNING about "legacy" Bangla fonts: many old Kalpana/SolaimanLipi
+  files are ASCII-mapped (you type "Avwg" to get "আমি"). Those will not
+  work here - this pipeline needs real Unicode Bengali plus a font with a
+  Unicode cmap and Bengali OpenType tables. The script checks a few
+  characters and stops with a clear message if the font fails.
+
+  SAVE vs PUBLISH
+     Save draft            -> writes lyrics.json only. No images yet.
+     Generate bitmaps + Sync ESP32
+                           -> saves, rebuilds images, restarts the server,
+                              tells the ESP32 to reload.
+
+
+==============================================================================
+  11.  STEP 8 - GENERATE BITMAPS AND SYNC THE ESP32
+==============================================================================
+
+11.1  Click  "Generate bitmaps + Sync ESP32".
+
+11.2  Watch the "Build output" card. A healthy run looks like:
+
+        Using Bengali Unicode font: Kalpana UNICODE.ttf
+        Created 000.bin  (01:11.000).
+        Created 001.bin  (01:11.700).
+        ...
+        Done.
+        Generated 12 bitmap files, each exactly 1024 bytes.
+        Updated: ...\web\manifest.json
+        Preview: ...\lyric_preview.png
+
+      and the toast says "Bitmaps generated. Reload was sent to the ESP32;
+      wait for 'Lyrics updated', then press Play lyrics."
+
+11.3  LOOK AT lyric_preview.png BEFORE TRUSTING THE DEVICE.
+      It is a contact sheet of every generated screen with its timestamp,
+      enlarged 3x. This catches 90% of problems: wrong timestamps, clipped
+      words, a broken font, boxes instead of letters. The same image shows
+      up in the "OLED preview" card of the panel.
+
+11.4  OPTIONAL - VERIFY THE FILE SIZE YOURSELF
+      Every .bin must be exactly 1024 bytes. In PowerShell, from the
+      project folder:
+
+         Get-ChildItem web\bitmaps\*.bin | Measure-Object Length -Sum
+         Get-ChildItem web\bitmaps\*.bin | Where-Object Length -ne 1024
+
+      The first prints Count = your number of lines and Sum = 1024 x Count.
+      The second must print nothing. A wrong-sized file is always a bug or
+      a half-written build - rebuild.
+
+      What the file actually is: 128 x 64 pixels, 1 bit per pixel, one
+      row after another, each row = 16 bytes, most-significant bit is the
+      leftmost pixel. That is exactly what Adafruit_GFX's drawBitmap()
+      expects with no PROGMEM and no scaling.
+
+      Leftover files: publishing never deletes old .bin files. If you cut
+      a playlist from 18 lines to 12, files 012-017 stay on disk unused.
+      The manifest only lists the ones it needs, so this is harmless - but
+      for a clean build, delete web\bitmaps\*.bin first, then publish.
+
+11.5  The panel also starts the content server for you and writes the
+      reload command, so by the time the build finishes the ESP32 can
+      already fetch everything.
+
+
+==============================================================================
+  12.  STEP 9 - CONFIGURE AND UPLOAD THE FIRMWARE
+==============================================================================
+
+12.1  Open the .ino (after the folder rename in Step 8.3).
+
+12.2  EDIT ONLY THESE THREE LINES (near the top, marked
+      "EDIT THESE SETTINGS"):
+
+         const char* WIFI_SSID     = "YOUR_WIFI_NAME";
+         const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+         const char* SERVER_BASE   = "http://192.168.1.50:8000"; // no trailing slash
+
+      SERVER_BASE rules:
+        - use the PC's IPv4 address, the one the control panel shows as
+          "PC address" (or run  ipconfig  and read "IPv4 Address" of your
+          Wi-Fi adapter)
+        - keep http:// and :8000
+        - NO trailing slash after 8000
+        - the ESP32 and the PC must be on the SAME network
+        - the PC's IP must be stable. If your router hands out a different
+          address tomorrow, the ESP32 will fail to find the server. Best
+          fix: set a DHCP reservation in the router for the PC's MAC, or
+          give the PC a static IP. Windows "mobile hotspot" usually uses a
+          fixed 192.168.137.1, which is convenient for demos.
+
+      Wi-Fi rules:
+        - 2.4 GHz only (an ESP32 cannot see 5 GHz SSIDs)
+        - the SSID is case-sensitive; do not add spaces
+        - hidden SSIDs generally work, but keep the network visible until
+          everything is tested
+        - special characters in the password are fine in a C string,
+          except " and \ which must be escaped as \" and \\
+
+12.3  TOOLS > BOARD / PORT as described in Step 6.4, then click Upload
+      (the right arrow). When you see
+         Connecting........_____.....
+      hold the BOOT button on the board for a second if it never connects.
+
+      "Sketch too big" -> Tools > Partition Scheme > "Huge APP (3MB No OTA)".
+      "Failed to connect to ESP32: Timed out" -> hold BOOT while uploading,
+      or lower Upload Speed to 115200.
+
+12.4  OPEN SERIAL MONITOR AT 115200 BAUD.
+      A healthy boot looks like this, in order:
+
+         ............
+         ESP32 IP: 192.168.1.77
+         Loading playlist...
+         Downloading bitmap 1/12
+         ...
+         Loaded 12 bitmaps
+         No GIF library found; using lyrics without a character.
+         Control file ready (seq=38, command=reload).
+         Free heap: 2xxxxx bytes. PSRAM: not detected.
+         Ready. Use the website Play / Stop / Restart buttons.
+
+      and the OLED shows "Lyrics ready!" / "Use PC control panel".
+
+      If it instead shows "Playlist error / Check Serial", the labels are:
+         Manifest download failed      -> server not running, wrong IP,
+                                          firewall, or different network
+         Wrong bitmap size             -> a .bin is not 1024 bytes
+         Bitmap download failed        -> file missing in web\bitmaps
+         Invalid manifest              -> manifest.json malformed/empty
+         JSON error                    -> manifest.json is not valid JSON
+      Read the exact Serial line - it names the failure.
+
+12.5  ORDER OF OPERATIONS THAT ALWAYS WORKS
+         1. PC: start the control panel and the content server
+         2. PC: publish the lyrics (or verify they are already published)
+         3. ESP32: press EN/RESET
+         4. Wait for "Lyrics ready!" on the OLED
+         5. PC: press "Play lyrics", and start the song at the same moment
+      The ESP32 retries nothing at boot. If the server was down when it
+      booted, it stays stuck in "Playlist error" until you reset it.
+
+
+==============================================================================
+  13.  STEP 10 - PLAY IT IN SYNC WITH THE SONG
+==============================================================================
+
+13.1  Start the song on the PC. Either:
+         - open  http://127.0.0.1:8000/songs/song.mp3  in a browser
+           (the content server serves it, so playback and the timer use
+           the same machine), or
+         - use any player (VLC, foobar2000, Spotify ...).
+
+13.2  Press "Play lyrics" in the panel and immediately start the song.
+      The ESP32 sets its timer to 00:00 at that instant and shows each
+      bitmap when its timestamp passes.
+
+      Being ~0.3 s late is inaudible. Being 2 s late is obvious - press
+      "Restart lyrics" and start the song again. Get the first line right
+      and everything after it follows.
+
+13.3  WHAT YOU WILL SEE
+         Before the first timestamp : the "default" GIF centered with
+                                      "Waiting" under it - ONLY if you added
+                                      animations.json; otherwise a blank
+                                      black screen
+         On a timestamp             : that lyric, centered, optionally with
+                                      a text effect
+         After the last timestamp   : the last lyric stays on screen
+         Stop                       : "Lyrics stopped / Use PC control panel"
+         Reload (publish)           : "Updating lyrics..." then
+                                      "Lyrics updated!"
+
+13.4  SERIAL FALLBACK
+      If the panel is unreachable you can still drive it from the Serial
+      Monitor:  S = start, R = restart, X = stop. Useful when demoing
+      without a laptop on the network ... but the bitmaps still had to be
+      downloaded at boot, so this is only a playback control, not a way to
+      skip the PC entirely.
+
+13.5  DRIFT
+      The ESP32 counts its own milliseconds; the PC player counts its own.
+      Over a 3-minute song you may end up 0.2-0.5 s apart. That is normal
+      and usually invisible. For long or precise sets, restart both
+      together before each song instead of chaining a whole playlist.
+
+
+==============================================================================
+  14.  MANUAL MODE (NO CONTROL PANEL)
+==============================================================================
+
+Useful for servers, Linux, or when you want to script everything. Run these
+from the project folder (the one containing "web").
+
+14.1  Install packages once (see Step 2).
+
+14.2  Edit lyrics.json by hand - keep the format:
+
+      {
+        "audio": "/songs/song.mp3",
+        "lyrics": [
+          { "time_ms": 71000, "text": "আমি" },
+          { "time_ms": 71700, "text": "ভাবতে পারিনি" }
+        ]
+      }
+
+      time_ms is milliseconds from the start of the song. Lines must be
+      in ascending order. Save the file as UTF-8 (Notepad: "UTF-8" in the
+      save dialog; avoid "ANSI").
+
+14.3  Generate the bitmaps:
+
+         py -3.12 generate_bitmaps_harfbuzz_ui.py
+
+      It prints each created file, updates web/manifest.json, and writes
+      lyric_preview.png. Check the preview.
+
+14.4  Serve the folder:
+
+         py -3.12 -m http.server 8000 --directory web
+
+      This listens on all interfaces, port 8000, serving "web". Leave the
+      window open. Ctrl+C stops it.
+
+14.5  Send playback commands by editing web/control.json and INCREASING
+      seq every time - the ESP32 ignores a seq it has already seen:
+
+         { "seq": 39, "command": "play" }
+
+      Valid commands: play, stop, restart, reload.
+
+      Any tiny local web server works, but the file must be served at
+      /control.json, /manifest.json and /bitmaps/*.bin.
+
+14.6  generate_bitmaps.py is the older, self-contained demo: it has its
+      own hard-coded LYRICS list of (seconds, text) pairs and does not
+      read lyrics.json. Handy for a quick test, not for real use. Its
+      font size starts at 22 px and it writes "time" (seconds) instead of
+      "time_ms" in the manifest - the firmware accepts both.
+
+
+==============================================================================
+  15.  THE FILES AND WHAT EVERY FIELD MEANS
+==============================================================================
+
+lyrics.json  (input, edited by you or the panel)
+   audio    : informational only. The ESP32 never downloads or plays it.
+   lyrics[] : time_ms (integer milliseconds) + text (string, UTF-8)
+
+web/manifest.json  (output, generated, do not hand-edit unless you know why)
+   audio         : informational
+   lyrics[]      : time_ms, image ("/bitmaps/000.bin"), and optionally
+                   display_mode, effect, effect_steps, animation_id,
+                   video_id, gif_side  (see section 16)
+
+web/control.json  (command channel)
+   {"seq": 38, "command": "play"}
+   seq must increase; the ESP32 remembers the last seq it applied. At boot
+   it records the current seq WITHOUT executing it, so an old "play" left
+   in the file does not start the lyrics by itself.
+
+web/bitmaps/NNN.bin  (1024 bytes each)
+   128 x 64, 1 bpp, row-major, MSB leftmost. No header, no footer.
+
+web/songs/song.mp3
+   Just a convenient place for the track, served at /songs/song.mp3 so you
+   can play it from a browser. Replace it with your own song; the filename
+   can be anything as long as you know its URL.
+
+lyric_preview.png
+   Contact sheet of the last successful build, 3x enlarged, labelled with
+   index and timestamp. Regenerate it by rebuilding.
+
+
+==============================================================================
+  16.  ADVANCED - SPRITE GIFS, VIDEO AND TEXT EFFECTS
+==============================================================================
+
+The firmware is more capable than the panel. There are four display modes
+per lyric row. The panel only writes plain text rows; the rest is opt-in by
+editing manifest.json (and adding the extra JSON files yourself).
+
+  display_mode : "text"    full screen, lyric only
+                 "side"    text squeezed left, 40x48 animated sprite right
+                 "gif"     sprite only, centered
+                 "video"   full-screen clip, 128x64 per frame
+                 "legacy"  no field -> "side" if a GIF exists, else "text"
+
+  effect       : none, wipe, slide, blink, fade, letters, blurwave,
+                 rotary, scanline, blinds, centerout, pixel
+                 (700 ms per transition, ~25 FPS redraw)
+
+  effect_steps : 1 - 40, how many bands/blocks the effect uses
+
+  animation_id : id of a sprite set from animations.json (max 24 chars)
+  video_id     : id of a clip from videos.json (max 24 chars)
+  gif_side     : "left" or "right" for display_mode "side"
+
+16.1  SPRITE GIFS - web/animations.json
+
+   Sprites are 40 x 48 pixels = 240 bytes per frame, up to 24 frames per
+   set, up to 8 sets, fps 1..20.
+
+      {
+        "animations": [
+          {
+            "id": "default", "width": 40, "height": 48, "fps": 8,
+            "enabled": true,
+            "frames": ["/gifs/default/000.bin", "/gifs/default/001.bin"]
+          }
+        ]
+      }
+
+   Name a set "default" and it plays on the waiting screen before the first
+   lyric, enlarged to 47x56 and centered, with "Waiting" underneath. Store
+   the frames under web/gifs/... .
+
+   The firmware also accepts an older single-set file, web/animation.json,
+   with the same fields at the top level.
+
+16.2  FULL-SCREEN VIDEO - web/videos.json
+
+   One file per clip: frame_count x 1024 raw bytes, stored under /videos/.
+
+      {
+        "videos": [
+          { "id": "eyes", "frame_count": 40, "fps": 12, "file": "/videos/eyes.bin" }
+        ]
+      }
+
+   Limits: <= 96 frames per clip, <= 192 total frames in a playlist, fps
+   <= 20. 40 frames at 12 fps = 3.3 seconds of animation, 40 KB of RAM.
+   Without PSRAM, keep the total small - check "Free heap" in Serial. The
+   firmware reserves 32 KB of internal RAM and silently skips a clip it
+   cannot afford.
+
+16.3  NO ASSET GENERATOR IS INCLUDED
+   This ZIP contains no GIF/video frames and no tool to produce them - only
+   the firmware's ability to load them. If you want that feature you must
+   create the 240-byte / 1024-byte raw frame files yourself (same packing
+   as the lyric bitmaps) and write the two JSON files. Everything degrades
+   gracefully when they are absent: "No GIF library found; using lyrics
+   without a character."
+
+
+==============================================================================
+  17.  TROUBLESHOOTING - SYMPTOM, CAUSE, FIX
+==============================================================================
+
+  A. control_panel.bat closes instantly / "Python launcher 'py' was not found"
+     CAUSE: no py launcher (Python not installed, or installed without it).
+     FIX:   reinstall Python from python.org with the launcher ticked, or
+            edit control_panel.bat to call "python" instead of "py".
+
+  B. "py -3.12" says an unknown version, but Python is installed
+     CAUSE: the .bat is pinned to 3.12 and you have another version.
+     FIX:   install 3.12, or change "-3.12" to "-3" in control_panel.bat.
+            Then make sure the packages are installed for that version
+            (section 5.4).
+
+  C. Build fails with "Missing Python package: PIL" (or freetype/uharfbuzz)
+     CAUSE: packages are in a different interpreter than the one running
+            the panel. Very common with several Pythons installed.
+     FIX:   in a console, run exactly:
+                py -3.12 -m pip install pillow uharfbuzz freetype-py
+            then relaunch the panel with the SAME launcher. To be sure,
+            the panel and the generator must share sys.executable.
+
+  D. content_server.log contains lines like "No module named http.server"
+     CAUSE: an older build tried to spawn "python -m http.server" and that
+            interpreter had no usable standard library (Microsoft Store
+            Python, a stripped embedded Python, or an IDE-bundled one).
+            Current builds serve files inside the panel process, so this
+            error should not appear again - the log is just leftover.
+     FIX:   ignore the stale log; if it still happens, uninstall Store
+            Python and install the python.org build. Delete the log file.
+
+  E. Control panel page loads, but every action says "API unavailable"
+     CAUSE: the panel window was closed, or it is running on a different
+            port than the one your browser is showing.
+     FIX:   read the console line "Bitmap Lyrics Studio is running at ..."
+            and use that exact URL. Keep the console open.
+
+  F. "Port 8000 is already occupied"
+     CAUSE: an old server (or another app) owns port 8000.
+     FIX:   close the other server, or find and kill the owner:
+                Get-NetTCPConnection -LocalPort 8000 -State Listen |
+                Select-Object OwningProcess
+                Stop-Process -Id <pid>
+            The panel can only manage a server it started itself.
+
+  G. OLED stays black / "OLED initialization failed"
+     CAUSE: wiring, power, address or controller mismatch.
+     FIX:   run the I2C scanner from Step 7. Found 0x3D instead of 0x3C?
+            change OLED_ADDRESS. Nothing found? check SDA=21, SCL=22,
+            VCC=3V3, and the USB cable. Some modules need a moment after
+            power-up - press EN.
+
+  H. Picture is shifted 2 pixels, or the right edge is cut off
+     CAUSE: an SSD1306 panel on the SH1106 driver (or the reverse).
+     FIX:   1.3" modules are usually SH1106; 0.96" modules are SSD1306.
+            For SSD1306, install Adafruit SSD1306 and change three things:
+               #include <Adafruit_SSD1306.h>
+               Adafruit_SSD1306 display(128, 64, &Wire, -1, 400000, 400000);
+               SH110X_WHITE -> SSD1306_WHITE  (display.clearDisplay etc.
+                                               keep the same names)
+            The bitmaps do not change at all.
+
+  I. "Playlist error / Check Serial" on the OLED at boot
+     CAUSE: the ESP32 could not download manifest.json.
+     FIX:   is the content server running? is SERVER_BASE exactly
+            http://<PC-IP>:8000 with no trailing slash? are both devices on
+            the same network? is the network profile Private? From a phone
+            browser on the same Wi-Fi, open http://<PC-IP>:8000/manifest.json
+            - if the phone cannot load it either, it is firewall/IP, not
+            firmware. Then press EN on the ESP32.
+
+  J. "Manifest download failed" every 500 ms in Serial, server clearly up
+     CAUSE: another adapter is answering - e.g. the PC has both Ethernet
+            and Wi-Fi, or a VPN is active, and the IP you used belongs to
+            the other interface.
+     FIX:   use the IP of the adapter that shares the Wi-Fi network with
+            the ESP32 (ipconfig, then match the subnet). Disable VPNs
+            during testing. 192.168.x.x vs 10.x.x.x mix-ups are common.
+
+  K. "Wrong bitmap size: 1023"
+     CAUSE: a truncated or hand-made .bin, or one generated by a different
+            canvas size.
+     FIX:   rebuild with the panel. Never edit .bin files as text. If you
+            wrote your own generator, it must emit exactly 128*64/8 = 1024
+            bytes.
+
+  L. Bengali appears as boxes, question marks, or scattered letters
+     CAUSE: the font is not a Unicode Bengali font, or has no Bengali
+            OpenType layout tables.
+     FIX:   use a modern Unicode Bengali font (Noto Sans Bengali,
+            Kalpurush, SolaimanLipi Unicode, Hind Siliguri). Delete the
+            extra .ttf files and keep exactly one in the project folder.
+            Legacy ASCII-mapped Kalpana will never work with this pipeline.
+
+  M. Text is cut off / too small / "will not fit the OLED even at 8px"
+     CAUSE: the line is simply too long for 128x64.
+     FIX:   split it across two rows with two timestamps. Or tune the
+            constants at the top of generate_bitmaps_harfbuzz_ui.py:
+               FONT_SIZE 19        starting size, larger = bigger text
+               MIN_FONT_SIZE 8     smallest allowed
+               TEXT_MARGIN 2       pixels of side padding
+               LINE_GAP 2          pixels between wrapped lines
+               MONO_THRESHOLD 96   higher = thinner strokes vanish,
+                                   lower = text looks bolder/blobbier
+            Rebuild and check lyric_preview.png after every change.
+
+  N. Console shows UnicodeEncodeError / cp1252 when printing Bengali
+     CAUSE: a Windows console defaulting to a legacy code page. The current
+            scripts reconfigure stdout to UTF-8 themselves, so this only
+            happens with older copies or your own scripts.
+     FIX:   set the code page:  chcp 65001
+            or set the environment variable PYTHONIOENCODING=utf-8
+
+  O. Everything works, but the OLED is blank after "Lyrics updated!"
+     CAUSE: manifest image paths that do not start with "/", or an empty
+            bitmap (all zeros).
+     FIX:   every "image" value must look like "/bitmaps/000.bin". Open
+            the .bin in the preview - if lyric_preview.png is black, the
+            text never rendered; check the font.
+
+  P. Upload fails: "Sketch too big"
+     CAUSE: default partition gives ~1.3 MB to the app and Wi-Fi + JSON +
+            display libraries are close to that.
+     FIX:   Tools > Partition Scheme > "Huge APP (3MB No OTA/1MB SPIFFS)".
+
+  Q. Board reboots randomly, or the OLED flickers and dies
+     CAUSE: power. Wi-Fi transmit bursts need ~500 mA.
+     FIX:   powered USB hub or a good 5 V supply; short, thick USB cable;
+            do not power the OLED from a different source than the board.
+
+  R. Lyrics lag behind the song more and more
+     CAUSE: you started the song before/after pressing Play, or two
+            clocks drifting slightly.
+     FIX:   press Restart lyrics and restart the song together. Timestamps
+            are relative to Play, not to the file's absolute position.
+
+  S. Panel says "Start the content server first"
+     CAUSE: play/stop commands travel through the server, so it must be up.
+     FIX:   click Start server (or publish once - publishing starts it).
+
+
+==============================================================================
+  18.  LIMITS AND PERFORMANCE
+==============================================================================
+
+  Max lyric lines per playlist .......... 80 (enforced in panel + firmware)
+  Bitmap size ............................ 1024 bytes (128x64, 1 bpp)
+  RAM for 80 lines ....................... ~80 KB of the ESP32's ~320 KB
+  Manifest parse buffer .................. 32 KB JSON document
+  Sprite frames .......................... 40x48 px, 240 bytes, <=24 per set,
+                                           <=8 sets, fps <=20
+  Video frames ........................... 1024 bytes each, <=96 per clip,
+                                           <=192 total, fps <=20
+  Text effect ............................ 700 ms, redraw ~25 FPS over I2C
+  I2C clock .............................. 400 kHz (SH1106 documented limit)
+  Full-screen redraw ..................... ~25 ms at 400 kHz
+  First boot / reload .................... a few seconds (downloads all bins)
+
+  The firmware downloads every bitmap at boot and keeps them in RAM, so
+  after boot it works even if the PC goes away - but it cannot learn new
+  lines until the server is back and you publish again.
+
+
+==============================================================================
+  19.  SHARING THIS WITH YOUR FOLLOWERS - CHECKLIST
+==============================================================================
+
+  BEFORE YOU ZIP, DO THIS:
+
+  [ ] 1. SCRUB YOUR WI-FI CREDENTIALS. In the .ino:
+             const char* WIFI_SSID     = "YOUR_WIFI_NAME";
+             const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+             const char* SERVER_BASE   = "http://192.168.1.50:8000";
+         Leaving a real SSID/password in a public ZIP is a real risk. Also
+         check you did not leave your home IP or a personal hotspot name
+         in the comments.
+
+  [ ] 2. REMOVE THE SONG. web/songs/song.mp3 is copyrighted music.
+         Replace it with a short silent or royalty-free clip, or delete it
+         and let followers add their own. Deleting is safest: 5.7 MB of
+         someone else's song in your ZIP is how tutorials get taken down.
+         Also decide about lyrics.json - it holds the words you typed, which
+         is your transcript of that song.
+
+  [ ] 3. KEEP OR DROP THE FONT CONSCIOUSLY. Kalpana is a free Bangla font
+         but check its licence text before redistributing it. If unsure,
+         ship no font and tell followers to download a Unicode Bengali
+         font (Noto Sans Bengali is OFL and safe) and rename it to
+         Kalpana.ttf, or simply drop it in the folder as the only .ttf.
+
+  [ ] 4. INCLUDE THIS TUTORIAL and keep README.txt short, pointing here.
+
+  [ ] 5. FIX THE TYPO OR MENTION IT: the folder is called "frimware" and
+         the .ino must sit in a folder named
+         BitmapLyricsPlayer_Video_Timeline_SH1106 for Arduino to open it.
+
+  [ ] 6. TEST THE CLEAN COPY. Unzip your share ZIP into a fresh folder on
+         another user account (or another PC), follow your own tutorial
+         from Step 1, and see whether it really works. This catches
+         "works only on my machine" assumptions - installed Python,
+         installed libraries, leftover files in web/bitmaps, an old
+         lyric_preview.png, a stale control.json seq.
+
+  [ ] 7. SAY THE TWO HARD TRUTHS in your post: the ESP32 does not play the
+         audio, and the PC must be on the same Wi-Fi while it runs. It
+         saves a hundred "it doesn't work" comments.
+
+  [ ] 8. MENTION THE PORTS. 8000 for the ESP32, 8080 for the panel,
+         and the Windows firewall question that appears the first time.
+
+  SUGGESTED ZIP LAYOUT
+
+     BitmapLyricsPlayer\
+        TUTORIAL.txt
+        README.txt
+        control_panel.bat
+        control_panel.py
+        generate_bitmaps_harfbuzz_ui.py
+        generate_bitmaps.py
+        lyrics.json            (a short demo set, e.g. 4 lines)
+        Kalpana UNICODE.ttf    (optional, see licence)
+        web\
+           control.json        ({"seq": 0, "command": "stop"})
+           manifest.json       (a 2-line demo, so the first boot works)
+           bitmaps\000.bin 001.bin
+           songs\               (empty, with a note)
+        frimware\...ino        (credentials replaced with placeholders)
+
+
+==============================================================================
+  20.  QUICK REFERENCE CARD
+==============================================================================
+
+  INSTALL (once)
+     py -3.12 -m pip install --upgrade pillow uharfbuzz freetype-py
+     py -3.12 -c "import PIL, uharfbuzz, freetype; print('OK')"
+
+  DAILY WORKFLOW
+     1. double-click control_panel.bat
+     2. edit rows, press "Generate bitmaps + Sync ESP32"
+     3. check lyric_preview.png
+     4. press "Play lyrics", start the song at the same moment
+
+  FIRMWARE - ONLY THESE CHANGE
+     WIFI_SSID, WIFI_PASSWORD, SERVER_BASE (http://PC-IP:8000, no slash)
+
+  MANUAL MODE
+     py -3.12 generate_bitmaps_harfbuzz_ui.py
+     py -3.12 -m http.server 8000 --directory web
+
+  PORTS
+     8000  content server  (ESP32 talks here)
+     8080  control panel   (browser, localhost only, 8081+ if busy)
+
+  COMMANDS
+     control.json : {"seq": n, "command": "play" | "stop" | "restart" | "reload"}
+     Serial 115200 : S = start, R = restart, X = stop
+
+  TIME FORMATS ACCEPTED BY THE PANEL
+     01:11.700   01:11   71
+
+  FILE CHECK
+     each web\bitmaps\*.bin must be exactly 1024 bytes
+
+  FAILURE -> FIRST THING TO CHECK
+     OLED "Playlist error"      -> is port 8000 reachable from the phone?
+     Empty preview              -> font (Unicode Bengali, one .ttf only)
+     Duplicate columns / shift  -> SH1106 vs SSD1306 driver
+     Panel says missing module  -> wrong Python has the packages
+
+
+==============================================================================
+  21.  FAQ
+==============================================================================
+
+  1. Does the ESP32 play the music?
+     No. It only draws lyrics. Play the song on the PC (the same machine
+     running the server) so both start together.
+
+  2. Can I run it without a PC?
+     Not with this firmware: bitmaps live on the PC. A future version would
+     store them in SPIFFS/LittleFS or on an SD card, but nothing in this ZIP
+     does that.
+
+  3. Does it work with a 0.96" SSD1306 OLED?
+     Yes, with a driver change - see troubleshooting item H. The 128x64
+     bitmap format is identical.
+
+  4. Can I use English, Hindi, Arabic ...?
+     Yes, if the font supports it. For Arabic/Urdu you must also change the
+     shaping direction in generate_bitmaps_harfbuzz_ui.py (buffer.direction)
+     and the text alignment, because this pipeline is left-to-right.
+     Bengali, Hindi/Devanagari, Tamil, Thai and other LTR scripts work as-is
+     once the font has the right tables.
+
+  5. How many songs can it hold?
+     One playlist at a time: up to 80 lines total, from one song (or a mix,
+     if you keep the timestamps continuous from 00:00).
+
+  6. Can I control it from my phone?
+     The panel binds to 127.0.0.1, so no. The content server (8000) is on
+     the LAN, but it only serves files. If you want phone control, change
+     the panel's bind address from "127.0.0.1" to "0.0.0.0" in
+     control_panel.py's main() - and accept that anyone on your Wi-Fi can
+     then use it.
+
+  7. Why is my first line late?
+     Because you pressed Play after starting the song. Press Restart lyrics
+     and start the song at that moment. Also remember nothing is shown
+     before the first timestamp.
+
+  8. Can I add a background image or a logo?
+     Yes - that is display_mode "video" (or a "gif" sprite). The frame
+     format is the same 1024-byte bitmap.
+
+  9. Where do I change the text size?
+     FONT_SIZE at the top of generate_bitmaps_harfbuzz_ui.py. The script
+     still auto-shrinks when a line does not fit, so raising it mainly
+     affects short lines.
+
+  10. The build is slow / the panel freezes for seconds
+     Each publish starts a Python process that shapes and rasterizes every
+     line. 20 short lines take a couple of seconds; that is normal. The
+     button shows "Building bitmaps..." meanwhile.
+
+  11. Can I publish while the song is playing?
+     Yes, but the ESP32 stops the timeline to reload ("Updating lyrics..."
+     -> "Lyrics updated!"), so you must press Play again and re-sync.
+
+  12. Is 400 kHz I2C safe?
+     Yes for SH1106 per its datasheet, with short wires. If the picture
+     glitches, lower OLED_I2C_HZ to 200000.
+
+  13. Why 1024 bytes?
+     128 x 64 pixels / 8 bits per byte = 1024. One byte per 8 horizontal
+     pixels, 64 rows.
+
+  14. Can two ESP32s use one server?
+     Yes - both download the same playlist. Commands are shared too, so
+     both start together, which is handy for a two-screen setup.
+
+
+==============================================================================
+  END OF TUTORIAL
+  If something here is wrong for your hardware, the Serial Monitor at
+  115200 baud is telling you why. Read it before changing code.
+==============================================================================
